@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# LXC backup
+#
+# Makes a dated tarball for each container using clones
+# for minimal container downtime
+#
+# 2015 Noah Putman
+
+# All the LXC functions need root...
+# This chunk will sudo this script if somebody else runs this
+
+if [ "$(id -u)" != "0" ]; then
+	sudo $0
+	exit 0
+fi
+
+
+# Here's some user variables to set up... the most important one
+# is DESTDIR... this is where your tarballs end up. Please make a
+# new directory for this. You might very well lose some old tarballs
+# when the old backup removal runs.
+#
+# TEMPDIR is the working directory where clones go to become tarballs
+# if you have a better place for them then help yourself. It gets
+# created and removed each run so make sure that TEMPDIR isn't a
+# directory that has stuff in it already!
+#
+# DAYS is the number of days that backups are kept. Anything older is
+# mercilessly expunged from this existence (unless you're particularly
+# handy with data recovery.)
+#
+# ACTIVE is a sentinel value that's eventually used to keep track of
+# whether or not containers are running, since they'll need to be
+# stopped and started at various points. You can put whatever you like,
+# it's a sentinel value at this point.
+
+DESTDIR="/mnt/fileserver-backups/lxc"
+TEMPDIR="/tmp/lxc-backup"
+DAYS="90"
+ACTIVE="DERP"
+
+# Here's the meat and potatoes, folks.
+
+list=`lxc-ls -1`
+TODAY=`date +%Y-%m-%d.%H%M`
+rm -rf "$TEMPDIR" > /dev/null 2>&1
+mkdir "$TEMPDIR" > /dev/null 2>&1
+mkdir "$DESTDIR/$TODAY" > /dev/null 2>&1
+
+echo
+
+for f in $list
+do
+	echo "Processing container: $f"
+
+	# We need to know if it's running or not, clones do not work on running containers
+	lxc-info -sn "$f" | grep -q "RUNNING" && ACTIVE="yes" || ACTIVE="no"
+	echo "Container active: $ACTIVE"
+
+	# Stop container if it's running
+	[ "$ACTIVE" = "yes" ] && echo "Stopping container" && lxc-stop -n "$f"
+
+	# Use built-in clone tool to make a duplicate container in TEMPDIR
+	echo "Cloning container"
+	lxc-clone -K -M -P "$TEMPDIR" "$f" "$f" > /dev/null 2>&1
+
+	# Start it back up if we stopped it earlier
+	[ "$ACTIVE" = "yes" ] && echo "Starting container" && lxc-start -dn "$f"
+
+	# Make a tarball of the duplicate container
+	echo "Making tarball of clone"
+	CONFIGFILE=`lxc-info -n "$f" -c lxc.rootfs | cut -d' ' -f 3`/../config
+	cp "$CONFIGFILE" "$TEMPDIR/$f"
+	tar czf "$DESTDIR/$TODAY/$f.$TODAY.tar.gz" -C "$TEMPDIR" "$f" > /dev/null 2>&1
+
+	# Remove duplicate container
+	echo "Cleaning up"
+	rm -rf "$TEMPDIR/$f"
+	echo
+done
+
+# Remove TEMPDIR that we made earlier
+rm -rf "$TEMPDIR"
+
+echo "Removing these old backups (if you have any older than $DAYS days):"
+find "$DESTDIR" -name "*gz" -mtime +$DAYS -print
+find "$DESTDIR" -mtime +$DAYS -type d -exec rm -rf {} \; >/dev/null 2>&1
+
+echo
+echo "All done!"
+echo
+
