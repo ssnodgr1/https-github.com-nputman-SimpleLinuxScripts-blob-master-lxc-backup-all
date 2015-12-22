@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# LXC backup
+#
+# Makes a dated tarball for each container using clones
+# for minimal container downtime
+#
+# 2015 Noah Putman
+#
+#Additions by Sean Snodgrass -12/2015
+#Long and short option parsing -n || --name and other variants ala the official lxc utils
+#The user can backup one container specified on the commandline or by specifying no options the default of all containers
+
+# All the LXC functions need root...
+# This chunk will sudo this script if somebody else runs this
+
+if [ "$(id -u)" != "0" ]; then
+        sudo $0
+        exit 0
+fi
+
+
+# Here's some user variables to set up... the most important one
+# is DESTDIR... this is where your tarballs end up. Please make a
+# new directory for this. You might very well lose some old tarballs
+# when the old backup removal runs.
+#
+# TEMPDIR is the working directory where clones go to become tarballs
+# if you have a better place for them then help yourself. It gets
+# created and removed each run so make sure that TEMPDIR isn't a
+# directory that has stuff in it already!
+#
+# DAYS is the number of days that backups are kept. Anything older is
+# mercilessly expunged from this existence (unless you're particularly
+# handy with data recovery.)
+#
+# ACTIVE is a sentinel value that's eventually used to keep track of
+# whether or not containers are running, since they'll need to be
+# stopped and started at various points. You can put whatever you like,
+# it's a sentinel value at this point.
+
+DESTDIR="/tmp/lxc-backup1";  mkdir  -pv "$DESTDIR"
+TEMPDIR="/tmp/lxc-backup"
+DAYS="90"
+ACTIVE="DERP"
+
+# Here's the meat and potatoes, folks.
+
+list=`lxc-ls -1`
+TODAY=`date +%Y-%m-%d.%H%M`
+rm -rf "$TEMPDIR" > /dev/null 2>&1
+mkdir "$TEMPDIR" > /dev/null 2>&1
+echo
+
+
+
+# This is a loop to parse user-supplied arguments
+
+while [[ $# -gt 0 ]]; # loop while the number of arguments is greater than 0
+      do
+          opt="$1";
+          shift;              # expose next argument
+    
+               case "$opt" in
+    
+
+                               # --lxcName=  
+                               # The name of the LXC container you wish to migrate
+
+                               "--lxcName" | "-lxcName" | "-name" | "--name" | "-n" )
+                               LXCNAME="$1"; shift;;
+                               "--lxcName="* | "-lxcName="* |  "-name="* | "--name="* | "-n="* )
+                               LXCNAME="${opt#*=}";;
+
+
+                               *) echo >&2 "Invalid option: $@"; exit 1;;
+                esac
+
+# Unique case syntax, found @ http://stackoverflow.com/questions/14062895/bash-argument-case-for-args-in
+    
+
+
+
+   
+done
+
+# Check for arguments if they don't exist then fall through to the for loop below
+
+if ! [ -n "$LXCNAME" ]
+        then
+              echo "No container name specified"; echo "Backing up all existing containers";echo
+
+                         
+
+        else
+           export  list="$LXCNAME"
+fi
+
+
+for f in $list
+                 do
+                     echo "Processing container: $f"
+
+                     # We need to know if it's running or not, clones do not work on running containers
+                     lxc-info -sn "$f" | grep -q "RUNNING" && ACTIVE="yes" || ACTIVE="no"
+                     echo "Container active: $ACTIVE"
+
+                    # Stop container if it's running
+                    [ "$ACTIVE" = "yes" ] && echo "Stopping container" && lxc-stop -n "$f"
+
+                    # Use built-in clone tool to make a duplicate container in TEMPDIR
+                    echo "Cloning container"
+                    lxc-clone -K -M -P "$TEMPDIR" "$f" "$f" > /dev/null 2>&1
+
+                    # Start it back up if we stopped it earlier
+                    [ "$ACTIVE" = "yes" ] && echo "Starting container" && lxc-start -dn "$f"
+
+                    # Make a tarball of the duplicate container
+                    echo "Making tarball of clone"
+                    tar czf "$DESTDIR/$f.$TODAY.tar.gz" -C "$TEMPDIR" "$f" > /dev/null 2>&1
+
+                    # Remove duplicate container
+                    echo "Cleaning up"
+                    rm -rf "$TEMPDIR/$f"
+                    echo
+done
+   
+
+
+# Remove TEMPDIR that we made earlier
+rm -rf "$TEMPDIR"
+
+echo "Removing these old backups (if you have any older than $DAYS days):"
+find "$DESTDIR" -name "*gz" -mtime +$DAYS -print
+find "$DESTDIR" -name "*gz" -mtime +$DAYS -exec rm {} \; >/dev/null 2>&1
+
+echo
+echo "All done!"
+echo
+
+
+
+
